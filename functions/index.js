@@ -8,9 +8,11 @@ exports.notifyNewTask = functions.firestore
     .document('households/{household}/tasks/{task}')
     .onCreate(async (snap, context) => {
         const task = snap.data();
-        const user = task.user;
 
-        return setNotification(task, user, context);
+        console.log('new task created:', task.id, 'for date:', task.meta_data.start_datetime);
+
+        // build notification data and send to subscribed tokens
+        return sendNotification(task, context)
     });
 
 exports.notifyUpdateTask = functions.firestore
@@ -18,33 +20,40 @@ exports.notifyUpdateTask = functions.firestore
     .onUpdate(async (snap, context) => {
         const task = snap.after.data();
         const previousTask = snap.before.data();
-        const user = task.user;
 
         // prevent infinite loop and unnessesery fcm callbacks
         if (task.meta_data.start_datetime === previousTask.meta_data.start_datetime &&
             task.user.id === previousTask.user.id &&
             task.description === previousTask.description) return null;
 
-        return setNotification(task, user, context);
+        console.log('task updated:', task.id, 'for date:', task.meta_data.start_datetime);
+
+        // send data notification to subscribed tokens
+        return sendNotification(task, context)
     });
 
 exports.notifyDeleteTask = functions.firestore
     .document('households/{household}/tasks/{task}')
     .onDelete(async (snap, context) => {
         const task = snap.data();
-        const user = task.user;
+        const user = await admin.firestore().doc(`users/${task.user.id}`).get()
+        const userData = user.data();
+        const payload = {
+            data: {
+                TASK_ID: task.id,
+                IS_DELETED: 'true'
+            }
+        };
 
-        return deleteNotification(task, user);
+        console.log('task deleted:', task.id, 'for user:', userData.name);
+
+        // send data notification to subscribed tokens
+        return sendToDevice(userData.registrationTokens, payload, userData.id);
     });
 
-async function setNotification(task, user, context) {
-    await admin.firestore().doc(`households/${context.params.household}/tasks/${context.params.task}`).update({ "is_done_enabled": true });
-
-    const userDoc = await admin.firestore().collection('users').doc(user.id).get();
-    const userData = userDoc.data();
-    const userId = userData.id;
-    const registrationTokens = userData.registrationTokens;
-
+async function sendNotification(task, context) {
+    const user = await admin.firestore().doc(`users/${task.user.id}`).get()
+    const userData = user.data();
     const payload = {
         data: {
             TASK_DESCRIPTION: task.description,
@@ -56,44 +65,39 @@ async function setNotification(task, user, context) {
             click_action: "MainActivity"
         }
     };
+    console.log('payload: ', payload);
 
-    return sendToDevice(registrationTokens, payload, userId);
+    // re-enable the 'done' button for the task 
+    // This will trigger onUpdate (again) so a guard is in place to prevent an infinite loop
+    await admin.firestore().doc(`households/${context.params.household}/tasks/${context.params.task}`).update({ "is_done_enabled": true });
+
+    // send data notification to subscribed tokens
+    return sendToDevice(userData.registrationTokens, payload, userData.id);
 }
 
-async function deleteNotification(task, user) {
-    const userDoc = await admin.firestore().collection('users').doc(user.id).get();
-    const userId = userDoc.data().id;
-    const registrationTokens = userDoc.data().registrationTokens;
-    const payload = {
-        data: {
-            TASK_ID: task.id,
-            IS_DELETED: 'true'
-        }
-    };
+async function sendToDevice(tokens, payload, userId) {
+    const response = await admin.messaging().sendToDevice(tokens, payload);
+    const stillTokens = tokens;
 
-    return sendToDevice(registrationTokens, payload, userId);
-}
-
-async function sendToDevice(registrationTokens, payload, userId) {
-    const response = await admin.messaging().sendToDevice(registrationTokens, payload);
-    const stillRegisteredTokens = registrationTokens
-
+    // remove unused tokens
     response.results.forEach((result, index) => {
         const error = result.error
         if (error) {
-            const failedRegistrationToken = registrationTokens[index]
+            const failedRegistrationToken = tokens[index]
             console.error('Error', failedRegistrationToken, error)
             if (error.code === 'messaging/invalid-registration-token'
                 || error.code === 'messaging/registration-token-not-registered') {
-                const failedIndex = stillRegisteredTokens.indexOf(failedRegistrationToken)
+                const failedIndex = stillTokens.indexOf(failedRegistrationToken)
                 if (failedIndex > -1) {
-                    stillRegisteredTokens.splice(failedIndex, 1)
+                    stillTokens.splice(failedIndex, 1)
                 }
             }
         }
     })
+    console.log('stillTokens:', stillTokens);
 
+    // update user tokens
     return admin.firestore().doc("users/" + userId).update({
-        registrationTokens: stillRegisteredTokens
-    })
+        registrationTokens: stillTokens
+    });
 }
