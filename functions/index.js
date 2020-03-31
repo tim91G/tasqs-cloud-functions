@@ -2,13 +2,6 @@ let functions = require('firebase-functions');
 let admin = require('firebase-admin');
 admin.initializeApp();
 
-// exports.myCustomFunction =
-//   functions.remoteConfig.onUpdate(async (versionMetadata) => {
-//     console.log("The project's Remote Config template was updated to " +
-//                 "version number : ", versionMetadata.versionNumber);
-//     // Use the versionMetadata object further...
-//   }
-
 exports.notifyNewTask = functions.firestore
     .document('households/{household}/tasks/{task}')
     .onCreate((snap, context) => {
