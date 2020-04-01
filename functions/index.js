@@ -12,7 +12,7 @@ exports.notifyNewTask = functions.firestore
         console.log('new task created:', task.id, 'for date:', task.meta_data.start_datetime);
 
         // build notification data and send to subscribed tokens
-        return sendNotification(task, context)
+        return sendNotification(task, context.params)
     });
 
 exports.notifyUpdateTask = functions.firestore
@@ -29,7 +29,7 @@ exports.notifyUpdateTask = functions.firestore
         console.log('task updated:', task.id, 'for date:', task.meta_data.start_datetime);
 
         // send data notification to subscribed tokens
-        return sendNotification(task, context)
+        return sendNotification(task, context.params)
     });
 
 exports.notifyDeleteTask = functions.firestore
@@ -45,13 +45,13 @@ exports.notifyDeleteTask = functions.firestore
             }
         };
 
-        console.log('task deleted:', task.id, 'for user:', userData.name);
+        console.log('task deleted:', task.id, 'for user:', task.user.name);
 
         // send data notification to subscribed tokens
-        return sendToDevice(userData.registrationTokens, payload, userData.id);
+        return sendToDevice(userData.registrationTokens, payload, task.user.id);
     });
 
-async function sendNotification(task, context) {
+async function sendNotification(task, params) {
     const user = await admin.firestore().doc(`users/${task.user.id}`).get()
     const userData = user.data();
     const payload = {
@@ -59,7 +59,7 @@ async function sendNotification(task, context) {
             TASK_DESCRIPTION: task.description,
             TASK_TIMEZONE: task.meta_data.time_zone,
             TASK_ID: task.id,
-            USER_NAME: userData.name,
+            USER_NAME: task.user.name,
             TASK_START_DATE: String(task.meta_data.start_datetime),
             IS_DELETED: 'false',
             click_action: "MainActivity"
@@ -69,10 +69,10 @@ async function sendNotification(task, context) {
 
     // re-enable the 'done' button for the task 
     // This will trigger onUpdate (again) so a guard is in place to prevent an infinite loop
-    await admin.firestore().doc(`households/${context.params.household}/tasks/${context.params.task}`).update({ "is_done_enabled": true });
+    admin.firestore().doc(`households/${params.household}/tasks/${params.task}`).update({ is_done_enabled: true });
 
     // send data notification to subscribed tokens
-    return sendToDevice(userData.registrationTokens, payload, userData.id);
+    return sendToDevice(userData.registrationTokens, payload, task.user.id);
 }
 
 async function sendToDevice(tokens, payload, userId) {
@@ -97,7 +97,5 @@ async function sendToDevice(tokens, payload, userId) {
     console.log('stillTokens:', stillTokens);
 
     // update user tokens
-    return admin.firestore().doc("users/" + userId).update({
-        registrationTokens: stillTokens
-    });
+    return admin.firestore().doc("users/" + userId).update({ registrationTokens: stillTokens });
 }
